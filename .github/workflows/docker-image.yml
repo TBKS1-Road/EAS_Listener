@@ -5,11 +5,148 @@ on:
   pull_request:
     branches: [ "main" ]
   workflow_dispatch:
+
 env:
   IMAGE_NAME: eas-listener
+  REGISTRY: ghcr.io
+
+# A second push to main supersedes the first. Multi-arch builds are expensive
+# enough that finishing a run nobody will pull is pure waste.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
-  push:
-    runs-on: ubuntu-latest
+  # Compiling under QEMU is ~12x slower than native, so every platform gets its
+  # own runner rather than sharing four cores three ways. arm64 gets a native
+  # arm64 runner (free for public repos), which removes emulation from that leg
+  # entirely; only armv7 still needs binfmt, and it now has a runner to itself.
+  #
+  # Pull requests build the amd64 leg only. Emulating the ARM legs on every PR
+  # costs ~20 minutes to re-prove what the merge build proves again anyway.
+  setup:
+    runs-on: ubuntu-24.04
+    outputs:
+      matrix: ${{ steps.matrix.outputs.matrix }}
+      image_id: ${{ steps.meta.outputs.image_id }}
+      version: ${{ steps.meta.outputs.version }}
+    steps:
+      - name: Compute build matrix
+        id: matrix
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            echo 'matrix={"include":[{"variant":"full","platform":"linux/amd64","arch":"amd64","runner":"ubuntu-24.04"}]}' >> "$GITHUB_OUTPUT"
+          else
+            echo 'matrix={"include":[{"variant":"full","platform":"linux/amd64","arch":"amd64","runner":"ubuntu-24.04"},{"variant":"full","platform":"linux/arm64","arch":"arm64","runner":"ubuntu-24.04-arm"},{"variant":"full","platform":"linux/arm/v7","arch":"armv7","runner":"ubuntu-24.04"},{"variant":"lite","platform":"linux/amd64","arch":"amd64","runner":"ubuntu-24.04"}]}' >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Compute image id and version
+        id: meta
+        run: |
+          IMAGE_ID=${{ env.REGISTRY }}/${{ github.repository_owner }}/$IMAGE_NAME
+          IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')
+          VERSION=$(echo "${{ github.ref }}" | sed -e 's,.*/\(.*\),\1,')
+          [[ "${{ github.ref }}" == "refs/tags/"* ]] && VERSION=$(echo $VERSION | sed -e 's/^v//')
+          [ "$VERSION" == "main" ] && VERSION=latest
+          echo "image_id=${IMAGE_ID}" >> "$GITHUB_OUTPUT"
+          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+
+  # Moved out of the Dockerfile's amd64 leg, where it added ~200s to the image
+  # build and could not share a cargo cache between runs. It gates the tag: the
+  # per-arch images push by digest, but `merge` only names them if this passes.
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: dtolnay/rust-toolchain@stable
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: test
+
+      - name: Run test suite
+        run: cargo test --release --locked
+
+  build:
+    needs: setup
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      packages: write
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.setup.outputs.matrix) }}
+    steps:
+      - uses: actions/checkout@v5
+
+      # Only the armv7 leg is emulated now; arm64 runs on a native arm64 runner
+      # and amd64 on a native x86 one, so neither needs binfmt registered.
+      - name: Set up QEMU
+        if: matrix.platform == 'linux/arm/v7'
+        uses: docker/setup-qemu-action@v3
+        with:
+          platforms: arm
+
+      - name: Set up Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # Logging in on pull requests too, even though they never push: the token
+      # is read-only there, but it is what lets `cache-from` pull the buildcache
+      # tag, which is the whole reason a PR build is fast.
+      - name: Log in to registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # Registry cache, not type=gha. The GHA backend spent 8m52s exporting a
+      # mode=max multi-arch cache that then produced zero CACHED steps on the
+      # next run -- a mode=max export of three platforms blows past the 10GB
+      # per-repo cache limit and gets evicted before it can be read back.
+      # GHCR has no such limit and the push runs at registry speed.
+      #
+      # Scoped per variant AND per arch so the four legs never overwrite each
+      # other's cache manifest.
+      - name: Build and push by digest
+        id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            VARIANT=${{ matrix.variant }}
+          labels: runnumber=${{ github.run_id }}
+          provenance: false
+          outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', needs.setup.outputs.image_id) || 'type=cacheonly' }}
+          cache-from: type=registry,ref=${{ needs.setup.outputs.image_id }}:buildcache-${{ matrix.variant }}-${{ matrix.arch }}
+          cache-to: ${{ github.event_name != 'pull_request' && format('type=registry,ref={0}:buildcache-{1}-{2},mode=max,compression=zstd,image-manifest=true,oci-mediatypes=true', needs.setup.outputs.image_id, matrix.variant, matrix.arch) || '' }}
+
+      - name: Export digest
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p /tmp/digests
+          digest='${{ steps.build.outputs.digest }}'
+          touch "/tmp/digests/${digest#sha256:}"
+
+      - name: Upload digest
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: digests-${{ matrix.variant }}-${{ matrix.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  # Composes the per-arch digests into the published manifest list. Gated on
+  # `test` so a failing test suite leaves the digests unnamed and unpullable,
+  # which is the same guarantee the in-Dockerfile `cargo test` used to give.
+  merge:
+    if: github.event_name != 'pull_request'
+    needs: [setup, test, build]
+    runs-on: ubuntu-24.04
     permissions:
       packages: write
       contents: read
@@ -17,65 +154,38 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # Unified image. On amd64 it carries Speechify Tom + Piper + espeak-ng;
-          # on arm64 it carries Piper + espeak-ng (spfy is 32-bit x86 only).
           - variant: full
             tag_suffix: ""
-            platforms: linux/amd64,linux/arm64,linux/arm/v7
-          # DEPRECATED: built from the same Dockerfile with VARIANT=lite purely so
-          # existing `:latest-lite` pulls keep resolving. Delete this matrix entry
-          # (and stop publishing the tag) after v0.32.0.
+          # DEPRECATED: published from the same Dockerfile with VARIANT=lite
+          # purely so existing `:latest-lite` pulls keep resolving. Delete this
+          # entry (and the matching `lite` entry in `setup`) after v0.32.0.
           #
-          # amd64 only, deliberately: no ARM `-lite` image was ever published, so
-          # no ARM user of this tag can exist. Building ARM legs for a deprecated
-          # tag would triple its cost to serve nobody. ARM users get `:latest`.
+          # amd64 only, deliberately: no ARM `-lite` image was ever published,
+          # so no ARM user of this tag can exist. ARM users get `:latest`.
           - variant: lite
             tag_suffix: "-lite"
-            platforms: linux/amd64
     steps:
-      - uses: actions/checkout@v4
-
-      # Required to build the arm64/armv7 legs on an amd64 runner.
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+      - name: Download digests
+        uses: actions/download-artifact@v4
         with:
-          platforms: arm64,arm
+          path: /tmp/digests
+          pattern: digests-${{ matrix.variant }}-*
+          merge-multiple: true
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
       - name: Log in to registry
-        if: github.event_name != 'pull_request'
         uses: docker/login-action@v3
         with:
-          registry: ghcr.io
+          registry: ${{ env.REGISTRY }}
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Compute image tag
-        id: meta
+      - name: Create manifest list and push
+        working-directory: /tmp/digests
         run: |
-          IMAGE_ID=ghcr.io/${{ github.repository_owner }}/$IMAGE_NAME
-          IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')
-          VERSION=$(echo "${{ github.ref }}" | sed -e 's,.*/\(.*\),\1,')
-          [[ "${{ github.ref }}" == "refs/tags/"* ]] && VERSION=$(echo $VERSION | sed -e 's/^v//')
-          [ "$VERSION" == "main" ] && VERSION=latest
-          echo IMAGE_ID=$IMAGE_ID
-          echo VERSION=${VERSION}${{ matrix.tag_suffix }}
-          echo "tag=${IMAGE_ID}:${VERSION}${{ matrix.tag_suffix }}" >> "$GITHUB_OUTPUT"
-
-      # Multi-platform images cannot be loaded into the local daemon, so pull
-      # requests build-and-verify only; pushes to main publish the manifest list.
-      - name: Build and push
-        uses: docker/build-push-action@v6
-        with:
-          context: .
-          file: Dockerfile
-          platforms: ${{ matrix.platforms }}
-          build-args: |
-            VARIANT=${{ matrix.variant }}
-          push: ${{ github.event_name != 'pull_request' }}
-          tags: ${{ steps.meta.outputs.tag }}
-          labels: runnumber=${{ github.run_id }}
-          cache-from: type=gha,scope=${{ matrix.variant }}
-          cache-to: type=gha,mode=max,scope=${{ matrix.variant }}
+          TAG='${{ needs.setup.outputs.image_id }}:${{ needs.setup.outputs.version }}${{ matrix.tag_suffix }}'
+          docker buildx imagetools create -t "$TAG" \
+            $(printf '${{ needs.setup.outputs.image_id }}@sha256:%s ' *)
+          docker buildx imagetools inspect "$TAG"

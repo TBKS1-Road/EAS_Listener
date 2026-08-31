@@ -1,6 +1,6 @@
 # v0.33.0: Released 2026-08-31
 
-- **Updated the Docker build.** The Dockerfile is now updated with recent upstream Speechify/spfy changes.
+- **Updated the Docker build.** The Dockerfile is now updated with recent upstream Speechify/spfy changes. As well, it has been optimized.
 
 - **CAP instructions now reach the dashboard.** The `<instruction>` block of a CAP alert was being parsed and written to the database, but it was never part of the live alert payload the backend pushes over the WebSocket, so the "CAP Instructions" block in the dashboard could never render. `EasAlertData` now carries an `instructions` field alongside `description`, populated from the CAP `<instruction>` element and put through the same whitespace/marker sanitization as the description.
 
