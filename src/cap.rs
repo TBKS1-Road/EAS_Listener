@@ -383,6 +383,15 @@ pub async fn run_cap_processor(
                 if persisted_active_dedupe_keys.contains(&dedupe_key)
                     || cap_alert_is_active(&app_state, &dedupe_key).await
                 {
+                    backfill_persisted_cap_details(
+                        &config,
+                        &app_state,
+                        &monitoring,
+                        &dedupe_key,
+                        &parsed,
+                    )
+                    .await;
+
                     let seen_until = match parsed.expires {
                         Some(expires_at) if expires_at > Utc::now() => expires_at,
                         _ => Utc::now() + ChronoDuration::seconds(CAP_SEEN_DEFAULT_TTL_SECS),
@@ -499,6 +508,85 @@ fn active_alert_has_dedupe_key(alerts: &[ActiveAlert], dedupe_key: &str) -> bool
 async fn cap_alert_is_active(app_state: &Arc<Mutex<AppState>>, dedupe_key: &str) -> bool {
     let guard = app_state.lock().await;
     active_alert_has_dedupe_key(&guard.active_alerts, dedupe_key)
+}
+
+fn backfill_alert_cap_details(
+    alerts: &mut [ActiveAlert],
+    dedupe_key: &str,
+    description: Option<&str>,
+    instructions: Option<&str>,
+) -> bool {
+    let now = Utc::now();
+    let mut changed = false;
+
+    for alert in alerts.iter_mut() {
+        if alert.expires_at <= now
+            || build_dedupe_key_from_raw_header(&alert.raw_header).as_deref() != Some(dedupe_key)
+        {
+            continue;
+        }
+
+        if alert.data.description.is_none() && description.is_some() {
+            alert.data.description = description.map(str::to_string);
+            changed = true;
+        }
+
+        if alert.data.instructions.is_none() && instructions.is_some() {
+            alert.data.instructions = instructions.map(str::to_string);
+            changed = true;
+        }
+    }
+
+    changed
+}
+
+async fn backfill_persisted_cap_details(
+    config: &Config,
+    app_state: &Arc<Mutex<AppState>>,
+    monitoring: &MonitoringHub,
+    dedupe_key: &str,
+    parsed: &CapAlert,
+) {
+    let description = Some(parsed.simple_description.trim())
+        .filter(|text| !text.is_empty())
+        .map(str::to_string);
+    let instructions = parsed
+        .instructions
+        .as_deref()
+        .map(simple_sanitize_description)
+        .map(|text| text.trim().to_string())
+        .filter(|text| !text.is_empty());
+
+    if description.is_none() && instructions.is_none() {
+        return;
+    }
+
+    let active_snapshot = {
+        let mut guard = app_state.lock().await;
+        if !backfill_alert_cap_details(
+            &mut guard.active_alerts,
+            dedupe_key,
+            description.as_deref(),
+            instructions.as_deref(),
+        ) {
+            return;
+        }
+
+        if let Err(err) = update_alert_files(&config.shared_state_dir, &guard).await {
+            warn!(
+                "Failed to persist backfilled CAP details for dedupe key {}: {}",
+                dedupe_key, err
+            );
+        }
+
+        guard.active_alerts.clone()
+    };
+
+    info!(
+        "Backfilled CAP description/instructions onto active alert {} (dedupe key={})",
+        parsed.identifier, dedupe_key
+    );
+    monitoring.broadcast_alerts(active_snapshot, None, None);
 }
 
 fn recording_file_name_from_path(path: &Path) -> Option<String> {
@@ -659,6 +747,12 @@ async fn process_cap_alert(
             .clone()
             .unwrap_or_else(|| alert.sender.clone()),
         description: Some(alert.simple_description.clone()),
+        instructions: alert
+            .instructions
+            .as_deref()
+            .map(simple_sanitize_description)
+            .map(|text| text.trim().to_string())
+            .filter(|text| !text.is_empty()),
         parsed_header,
     };
 
@@ -2294,6 +2388,7 @@ mod tests {
             locations: "Sample Location".to_string(),
             originator: "WXR".to_string(),
             description: None,
+            instructions: None,
             parsed_header: None,
         }
     }
@@ -2478,6 +2573,50 @@ mod tests {
         assert!(active_alert_has_dedupe_key(
             &[eas_alert],
             dedupe_key.as_str()
+        ));
+    }
+
+    #[test]
+    fn backfill_fills_only_missing_cap_details_on_matching_alerts() {
+        let raw_header = "ZCZC-CIV-FRW-030039+2355-2421717-IPAWSCAP-";
+        let dedupe_key = build_dedupe_key_from_raw_header(raw_header).expect("dedupe key");
+
+        let mut restored = ActiveAlert::new(
+            sample_alert_data("FRW", &["030039"]),
+            raw_header.to_string(),
+            Duration::from_secs(3600),
+        );
+        restored.data.description = Some("Already present.".to_string());
+
+        let other = ActiveAlert::new(
+            sample_alert_data("TOR", &["031055"]),
+            "ZCZC-WXR-TOR-031055+0030-1231645-KWO35-".to_string(),
+            Duration::from_secs(3600),
+        );
+
+        let mut alerts = vec![restored, other];
+        assert!(backfill_alert_cap_details(
+            &mut alerts,
+            dedupe_key.as_str(),
+            Some("Replacement description."),
+            Some("Residents should remain prepared to evacuate."),
+        ));
+
+        assert_eq!(
+            alerts[0].data.description.as_deref(),
+            Some("Already present.")
+        );
+        assert_eq!(
+            alerts[0].data.instructions.as_deref(),
+            Some("Residents should remain prepared to evacuate.")
+        );
+        assert!(alerts[1].data.instructions.is_none());
+
+        assert!(!backfill_alert_cap_details(
+            &mut alerts,
+            dedupe_key.as_str(),
+            Some("Replacement description."),
+            Some("Residents should remain prepared to evacuate."),
         ));
     }
 

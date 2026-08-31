@@ -549,6 +549,7 @@ mod tests {
             locations: "Douglas County".to_string(),
             originator: "WXR".to_string(),
             description: None,
+            instructions: None,
             parsed_header: None,
         };
         ActiveAlert::new(data, raw_header.to_string(), Duration::from_secs(120))

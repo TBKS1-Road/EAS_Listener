@@ -402,6 +402,7 @@ pub async fn run_alert_manager(
                 locations,
                 originator,
                 description: None,
+                instructions: None,
                 parsed_header: None,
             },
         };
@@ -758,6 +759,7 @@ async fn get_eas_details_and_log(
         locations,
         originator,
         description: None,
+        instructions: None,
         parsed_header: Some(parsed_header),
     };
 
@@ -881,6 +883,7 @@ mod tests {
             locations: "Sample Location".to_string(),
             originator: "WXR".to_string(),
             description: None,
+            instructions: None,
             parsed_header: None,
         }
     }

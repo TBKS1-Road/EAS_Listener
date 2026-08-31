@@ -1,4 +1,18 @@
-# v0.32.0: Released 2026-07-22
+# v0.33.0: Released 2026-08-31
+
+- **Updated the Docker build.** The Dockerfile is now updated with recent upstream Speechify/spfy changes.
+
+- **CAP instructions now reach the dashboard.** The `<instruction>` block of a CAP alert was being parsed and written to the database, but it was never part of the live alert payload the backend pushes over the WebSocket, so the "CAP Instructions" block in the dashboard could never render. `EasAlertData` now carries an `instructions` field alongside `description`, populated from the CAP `<instruction>` element and put through the same whitespace/marker sanitization as the description.
+
+- **Active alerts restored from an older state file now get their CAP fields backfilled.** `active_alerts.json` is written with whatever fields the running build knows about, and the CAP poller skips any alert whose dedupe key is already in the persisted active set -- so an alert carried across an upgrade would sit on the dashboard missing every newly added field until it expired. The skip path now patches the parsed description and instructions onto the matching active alert when they are absent, persists the state file, and rebroadcasts to the dashboard. Values that are already present are never overwritten.
+
+- **The archive shows CAP description and instructions too.** Archived cards previously stopped at the raw ZCZC string. `archive.php` already carried `description` through from the database and now carries `instructions` as well, and `archive.js` renders both blocks on CAP-sourced alerts (detected by the row's `source_type`, falling back to an `IPAWSCAP`/`IPAWSWEA` marker in the raw header for older rows). Both are HTML-escaped. No backfill is needed -- these columns have been populated on every CAP insert all along, so existing archived alerts show their text immediately.
+
+- **CAP instructions are now included in notifications.** Discord embeds get a "CAP Instructions:" field, and the AppRise markdown, HTML, and plaintext bodies each get a matching section. On Discord the field is only added when it actually fits: instructions longer than the 1024-character field limit, or that would push the embed past Discord's 6000-character total, are omitted entirely rather than truncated mid-sentence, and the omission is logged.
+
+---
+
+v0.32.0: Released 2026-07-22
 
 - **ARM images are here.** `latest` is now a multi-arch manifest covering `linux/amd64`, `linux/arm64`, and `linux/arm/v7`, so everything from a Raspberry Pi 2 on 32-bit Pi OS to a Pi 5 on a 64-bit OS can pull the image directly with no config change. CI now builds with Buildx + QEMU instead of a plain `docker build`. Thanks to @UrkiMimi who opened the ARM request issue (#6).
 

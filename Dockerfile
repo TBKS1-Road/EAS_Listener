@@ -96,20 +96,13 @@ ENV EAS_IMAGE_VARIANT=${VARIANT}
 #
 # These checksums pin exact bytes. If a release is ever re-cut under the same
 # tag, they must be refreshed or the build fails closed at `sha256sum -c`.
-ARG SPFY_VERSION=2026.07.22
+ARG SPFY_VERSION=2026.08.31
 ARG SPFY_ASSET_SLUG_AMD64="x86_64"
-ARG SPFY_ASSET_SHA256_AMD64="534464bca27e553e0a06e5478afe4e85c878d21cf28e4637d28175bd9370f18a"
+ARG SPFY_ASSET_SHA256_AMD64="c75db941314af3a8163095d63eddca0479076af0eedd7b29f0a015d73141db69"
 ARG SPFY_ASSET_SLUG_ARM64="arm64"
-ARG SPFY_ASSET_SHA256_ARM64="4994131c0fa61c3edb3c1e60ad138b0e9dc03b1a728b0c5e020708110ca0d7a2"
+ARG SPFY_ASSET_SHA256_ARM64="7ccdd7380459b67b54ce11727c51dc5713834faab5b6fc0bfc7be4b51a5756e6"
 ARG SPFY_ASSET_SLUG_ARM="armv7"
-ARG SPFY_ASSET_SHA256_ARM="345a63ad6acefb05216455ed5b516128ecc38c3baa01c24f7652f8cf8faf26c8"
-
-# Voice data is architecture-independent: the same blobs are used by every spfy
-# build. Pulled from a pinned commit and checksummed like the tarball itself.
-ARG SPFY_VOICE_COMMIT=29f0888479de76b84ddc65e232a4ac04bee2f0dd
-ARG SPFY_VIN_SHA256="5487ad30bcd9a96ce3fd313f74343f75096ecb11dc82dbd48f3f8c8dd7840d2c"
-ARG SPFY_VDB_SHA256="e35bf4f8dbe5f608f0d0441e5b07acadd95b2b32d4102e6747c8ab43bf35d660"
-ARG SPFY_VCF_SHA256="f6948a9ff2654af200220808bbe3f8d1feca1c72175994dcff7b64aa4368101c"
+ARG SPFY_ASSET_SHA256_ARM="a2f7008f8db16ba185d420e46da36d885fe97a0007f91982a5c5f9b43b6c3a2f"
 
 ARG PIPER_VERSION=2023.11.14-2
 ARG PIPER_VOICE=en_US-lessac-medium
@@ -178,20 +171,17 @@ RUN set -eu; \
     fi; \
     ASSET_DIR="spfy-linux-${SPFY_SLUG}-${SPFY_VERSION}"; \
     ASSET_NAME="${ASSET_DIR}.tar.gz"; \
+    TEMP_DIR="/tmp/spfy"; \
     curl -fL --retry 5 --retry-delay 2 -o "/tmp/${ASSET_NAME}" \
         "https://github.com/wagwan-piffting-blud/Speechify/releases/download/${SPFY_VERSION}/${ASSET_NAME}"; \
     echo "${SPFY_SHA256}  /tmp/${ASSET_NAME}" | sha256sum -c -; \
-    tar -xzf "/tmp/${ASSET_NAME}" -C /usr/local/bin --strip-components=2 "${ASSET_DIR}/bin/spfy_synth"; \
-    rm -f "/tmp/${ASSET_NAME}"; \
+    mkdir -p "${TEMP_DIR}" "/app/voices/tom"; \
+    tar -xzvf "/tmp/${ASSET_NAME}" -C "${TEMP_DIR}" --strip-components=1; \
+    mv "${TEMP_DIR}/bin/spfy_synth" /usr/local/bin/spfy_synth; \
     chmod +x /usr/local/bin/spfy_synth; \
-    mkdir -p /app/voices/tom; \
-    for blob in tom.vin tom8.vdb tom.vcf; do \
-        curl -fL --retry 5 --retry-delay 2 -o "/app/voices/tom/${blob}" \
-            "https://raw.githubusercontent.com/wagwan-piffting-blud/Speechify/${SPFY_VOICE_COMMIT}/en-US/tom/${blob}"; \
-    done; \
-    printf '%s  /app/voices/tom/tom.vin\n%s  /app/voices/tom/tom8.vdb\n%s  /app/voices/tom/tom.vcf\n' \
-        "${SPFY_VIN_SHA256}" "${SPFY_VDB_SHA256}" "${SPFY_VCF_SHA256}" | sha256sum -c -; \
-    chmod -R 755 /app/voices
+    mv "${TEMP_DIR}/en-US/tom" /app/voices; \
+    chmod -R 755 /app/voices; \
+    rm -rf "/tmp/${ASSET_NAME}" "${TEMP_DIR}";
 
 RUN userdel icecast2 && useradd -m -s /bin/bash icecast2 && chown -R icecast2:icecast2 /etc/icecast2 /var/log/icecast2
 

@@ -16,6 +16,8 @@ pub struct EasAlertData {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instructions: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub parsed_header: Option<ParsedEasSerialized>,
 }
 
@@ -163,6 +165,7 @@ mod tests {
             locations: "Douglas County".to_string(),
             originator: "WXR".to_string(),
             description: None,
+            instructions: None,
             parsed_header: None,
         }
     }
@@ -175,6 +178,28 @@ mod tests {
         assert!(alert.expires_at > alert.received_at);
         let delta = alert.expires_at - alert.received_at;
         assert!(delta.num_seconds() >= 179 && delta.num_seconds() <= 181);
+    }
+
+    #[test]
+    fn cap_instructions_survive_the_websocket_payload_roundtrip() {
+        let mut data = sample_data();
+        data.description = Some("A tornado is on the ground.".to_string());
+        data.instructions = Some("Take shelter now.".to_string());
+        let alert = ActiveAlert::new(data, "ZCZC-test".to_string(), Duration::from_secs(120));
+
+        let serialized = serde_json::to_value(&alert).expect("alert serializes");
+        assert_eq!(
+            serialized["data"]["instructions"],
+            json!("Take shelter now.")
+        );
+
+        let without = ActiveAlert::new(
+            sample_data(),
+            "ZCZC-test".to_string(),
+            Duration::from_secs(120),
+        );
+        let serialized = serde_json::to_value(&without).expect("alert serializes");
+        assert!(serialized["data"].get("instructions").is_none());
     }
 
     #[test]

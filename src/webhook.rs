@@ -162,6 +162,11 @@ pub async fn send_alert_webhook(
         .as_deref()
         .map(str::trim)
         .filter(|value| !value.is_empty());
+    let instructions = data
+        .instructions
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
     let event_code = &data.event_code;
     let event_title = determine_event_title(&event_code);
     let originator_code = &data.originator;
@@ -196,6 +201,7 @@ pub async fn send_alert_webhook(
         &data.eas_text,
         &alert.raw_header,
         description,
+        instructions,
     );
     let markdown_body = build_markdown_body(
         &event_title,
@@ -204,6 +210,7 @@ pub async fn send_alert_webhook(
         &data.eas_text,
         &alert.raw_header,
         description,
+        instructions,
     );
     let html_body = build_html_body(
         &event_title,
@@ -212,6 +219,7 @@ pub async fn send_alert_webhook(
         &data.eas_text,
         &alert.raw_header,
         description,
+        instructions,
     );
     let text_body = build_plain_body(
         &event_title,
@@ -220,6 +228,7 @@ pub async fn send_alert_webhook(
         &data.eas_text,
         &alert.raw_header,
         description,
+        instructions,
     );
 
     let discord_urls: Vec<&str> = apprise_urls_from_config_array
@@ -571,6 +580,26 @@ fn truncate_for_log(input: &str, max_bytes: usize) -> String {
     format!("{}...(truncated)", &input[..end])
 }
 
+const DISCORD_FIELD_VALUE_LIMIT: usize = 1024;
+const DISCORD_EMBED_TOTAL_LIMIT: usize = 6000;
+
+fn discord_fields_char_count(fields: &[serde_json::Value]) -> usize {
+    fields
+        .iter()
+        .map(|field| {
+            let name_len = field
+                .get("name")
+                .and_then(|value| value.as_str())
+                .map_or(0, |value| value.chars().count());
+            let value_len = field
+                .get("value")
+                .and_then(|value| value.as_str())
+                .map_or(0, |value| value.chars().count());
+            name_len + value_len
+        })
+        .sum()
+}
+
 fn build_discord_embed_body(
     stream_id: &str,
     title: &str,
@@ -580,6 +609,7 @@ fn build_discord_embed_body(
     eas_text: &str,
     raw_header: &str,
     description: Option<&str>,
+    instructions: Option<&str>,
 ) -> serde_json::Value {
     let runtime_config = runtime_config_snapshot();
     let monitor_number = runtime_config
@@ -661,9 +691,35 @@ fn build_discord_embed_body(
     if let Some(value) = description {
         fields.push(json!({
             "name": "CAP Description:",
-            "value": discord_codeblock(value, 1024),
+            "value": discord_codeblock(value, DISCORD_FIELD_VALUE_LIMIT),
             "inline": false
         }));
+    }
+
+    if let Some(value) = instructions {
+        let field_name = "CAP Instructions:";
+        let field_value = format!("```\n{}\n```", value);
+        let field_len = field_name.chars().count() + field_value.chars().count();
+        let projected_total = event_title.chars().count()
+            + author_name.chars().count()
+            + discord_fields_char_count(&fields)
+            + field_len;
+
+        if field_value.chars().count() <= DISCORD_FIELD_VALUE_LIMIT
+            && projected_total <= DISCORD_EMBED_TOTAL_LIMIT
+        {
+            fields.push(json!({
+                "name": field_name,
+                "value": field_value,
+                "inline": false
+            }));
+        } else {
+            info!(
+                "Omitting CAP instructions from Discord embed for '{}': {} chars would exceed the embed limits",
+                event_code,
+                value.chars().count()
+            );
+        }
     }
 
     let embed = json!({
@@ -687,15 +743,20 @@ fn build_markdown_body(
     eas_text: &str,
     raw_header: &str,
     description: Option<&str>,
+    instructions: Option<&str>,
 ) -> String {
     let runtime_config = runtime_config_snapshot();
     let description_section = match description {
         Some(value) => format!("\n\n**CAP Description:**\n```\n{}\n```", value),
         None => String::new(),
     };
+    let instructions_section = match instructions {
+        Some(value) => format!("\n\n**CAP Instructions:**\n```\n{}\n```", value),
+        None => String::new(),
+    };
 
     format!(
-        "**{} - Software ENDEC Logs**\n\n**{} {}** has just been received from: {}\n\n**Received:** {}\n\n**EAS Text Data:**\n```\n{}\n```\n\n**EAS Protocol Data:**\n```\n{}\n```{}\n\nPowered by [Wags' Software ENDEC]({})",
+        "**{} - Software ENDEC Logs**\n\n**{} {}** has just been received from: {}\n\n**Received:** {}\n\n**EAS Text Data:**\n```\n{}\n```\n\n**EAS Protocol Data:**\n```\n{}\n```{}{}\n\nPowered by [Wags' Software ENDEC]({})",
         runtime_config.station_name,
         a_or_an(title),
         title,
@@ -704,6 +765,7 @@ fn build_markdown_body(
         eas_text.trim_end(),
         raw_header.trim_end(),
         description_section,
+        instructions_section,
         github_url.as_str()
     )
 }
@@ -835,11 +897,19 @@ fn build_html_body(
     eas_text: &str,
     raw_header: &str,
     description: Option<&str>,
+    instructions: Option<&str>,
 ) -> String {
     let runtime_config = runtime_config_snapshot();
     let description_section = match description {
         Some(value) => format!(
             "<p><strong>CAP Description:</strong></p><pre>{}</pre>",
+            html_escape(value)
+        ),
+        None => String::new(),
+    };
+    let instructions_section = match instructions {
+        Some(value) => format!(
+            "<p><strong>CAP Instructions:</strong></p><pre>{}</pre>",
             html_escape(value)
         ),
         None => String::new(),
@@ -853,7 +923,7 @@ fn build_html_body(
          <pre>{}</pre>\
          <p><strong>EAS Protocol Data:</strong></p>\
          <pre>{}</pre>\
-         {}\
+         {}{}\
          <p>Powered by <a href=\"{}\">Wags' Software ENDEC</a></p>",
         html_escape(&runtime_config.station_name),
         html_escape(a_or_an(title)),
@@ -863,6 +933,7 @@ fn build_html_body(
         html_escape(eas_text.trim_end()),
         html_escape(raw_header.trim_end()),
         description_section,
+        instructions_section,
         github_url.as_str()
     )
 }
@@ -874,15 +945,20 @@ fn build_plain_body(
     eas_text: &str,
     raw_header: &str,
     description: Option<&str>,
+    instructions: Option<&str>,
 ) -> String {
     let runtime_config = runtime_config_snapshot();
     let description_section = match description {
         Some(value) => format!("\n\nCAP Description:\n{}", value),
         None => String::new(),
     };
+    let instructions_section = match instructions {
+        Some(value) => format!("\n\nCAP Instructions:\n{}", value),
+        None => String::new(),
+    };
 
     format!(
-        "{} - Software ENDEC Logs\n\n{} {} has just been received from: {}\nReceived: {}\n\nEAS Text Data:\n{}\n\nEAS Protocol Data:\n{}{}\n\nPowered by Wags' Software ENDEC ({})",
+        "{} - Software ENDEC Logs\n\n{} {} has just been received from: {}\nReceived: {}\n\nEAS Text Data:\n{}\n\nEAS Protocol Data:\n{}{}{}\n\nPowered by Wags' Software ENDEC ({})",
         runtime_config.station_name,
         a_or_an(title),
         title,
@@ -891,6 +967,7 @@ fn build_plain_body(
         eas_text.trim_end(),
         raw_header.trim_end(),
         description_section,
+        instructions_section,
         github_url.as_str()
     )
 }
@@ -955,10 +1032,60 @@ mod tests {
             "Sample EAS text",
             "ZCZC-WXR-TOR-031055+0030-1231645-KWO35-",
             Some("CAP Description"),
+            Some("CAP Instructions"),
         );
         let valid = json!({ "embeds": [embed] });
         let issues = validate_discord_payload(&valid);
         assert!(issues.is_empty(), "expected no issues, got: {:?}", issues);
+    }
+
+    fn embed_field_names(embed: &serde_json::Value) -> Vec<String> {
+        embed
+            .get("fields")
+            .and_then(|fields| fields.as_array())
+            .map(|fields| {
+                fields
+                    .iter()
+                    .filter_map(|field| field.get("name").and_then(|name| name.as_str()))
+                    .map(str::to_string)
+                    .collect()
+            })
+            .unwrap_or_default()
+    }
+
+    #[test]
+    fn discord_embed_includes_instructions_only_when_they_fit() {
+        let fitting = build_discord_embed_body(
+            "unknown-stream",
+            "Tornado Warning",
+            "TOR",
+            "The National Weather Service",
+            "2026-03-06 10:00:00 PM",
+            "Sample EAS text",
+            "ZCZC-WXR-TOR-031055+0030-1231645-KWO35-",
+            Some("CAP Description"),
+            Some("Take shelter now."),
+        );
+        assert!(embed_field_names(&fitting)
+            .iter()
+            .any(|name| name == "CAP Instructions:"));
+
+        let oversized_instructions = "A".repeat(2000);
+        let oversized = build_discord_embed_body(
+            "unknown-stream",
+            "Tornado Warning",
+            "TOR",
+            "The National Weather Service",
+            "2026-03-06 10:00:00 PM",
+            "Sample EAS text",
+            "ZCZC-WXR-TOR-031055+0030-1231645-KWO35-",
+            Some("CAP Description"),
+            Some(oversized_instructions.as_str()),
+        );
+        assert!(!embed_field_names(&oversized)
+            .iter()
+            .any(|name| name == "CAP Instructions:"));
+        assert!(validate_discord_payload(&json!({ "embeds": [oversized] })).is_empty());
     }
 
     #[test]
@@ -970,8 +1097,10 @@ mod tests {
             "Text",
             "Header",
             Some("CAP details"),
+            Some("CAP steps"),
         );
         assert!(markdown.contains("CAP Description"));
+        assert!(markdown.contains("CAP Instructions"));
 
         let plain = build_plain_body(
             "Tornado Warning",
@@ -980,7 +1109,9 @@ mod tests {
             "Text",
             "Header",
             Some("CAP details"),
+            None,
         );
         assert!(plain.contains("CAP Description"));
+        assert!(!plain.contains("CAP Instructions"));
     }
 }

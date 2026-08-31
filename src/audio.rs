@@ -916,6 +916,7 @@ fn process_stream(
                                         locations: "Unknown".to_string(),
                                         originator: "WXR".to_string(),
                                         description: None,
+                                        instructions: None,
                                         parsed_header,
                                     },
                                     raw_header.clone(),

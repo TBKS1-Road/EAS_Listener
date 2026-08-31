@@ -953,6 +953,7 @@
         const eventCode = eventCodeForAlert(alert) || "-";
         const originator = originatorForAlert(alert) || "-";
         const capDescription = capAlert ? String(alert?.data?.description || "").trim() : "";
+        const capInstructions = capAlert ? String(alert?.data?.instructions || "").trim() : "";
         const sourceStream =
             state.streams.get(alert?.source_stream_url)?.stream_url
             || state.streams.get(alert?.stream_url)?.stream_url
@@ -974,6 +975,7 @@
             eventCode,
             originator,
             capDescription,
+            capInstructions,
             sourceStream,
             hasSourceStream,
         };
@@ -1004,7 +1006,8 @@
                 <div><strong>Expires:</strong> ${formatTimestamp(alert.expires_at * 1000)}</div>
                 <br>
                 <div><strong>Length:</strong> ${alert.purge_time.secs ? secondsToHM(alert.purge_time.secs) : "-"}</div>
-                ${renderData.capDescription ? `<br><div><strong>CAP Description:</strong> <pre>${escapeHtml(renderData.capDescription)}</pre></div><br>` : ""}
+                ${renderData.capDescription ? `<br><div><strong>CAP Description:</strong> <pre>${escapeHtml(renderData.capDescription)}</pre></div>` : ""}
+                ${renderData.capInstructions ? `<br><div><strong>CAP Instructions:</strong> <pre>${escapeHtml(renderData.capInstructions)}</pre></div>` : ""}
                 <br>
                 <div><strong>Raw ZCZC String:</strong> <pre>${alert.raw_header || "-"}</pre></div>
                 <br>

@@ -712,6 +712,7 @@ if(!empty($_GET['fetch_alerts']) && $_SESSION['authed'] === true) {
                     "eas_text" => $row["eas_text"] ?? null,
                     "audio_recording" => $audio_recording,
                     "description" => $row["description"] ?? null,
+                    "instructions" => $row["instructions"] ?? null,
                     "source_type" => $row["source_type"] ?? null,
                 ]
             ];

@@ -56,7 +56,7 @@ async fn probe_icecast_format(source_url: &str) -> Option<MatchedFormat> {
         .arg("error")
         .arg("-hide_banner")
         .arg("-rw_timeout")
-        .arg("8000000") 
+        .arg("8000000")
         .arg("-select_streams")
         .arg("a:0")
         .arg("-show_entries")
@@ -69,7 +69,7 @@ async fn probe_icecast_format(source_url: &str) -> Option<MatchedFormat> {
 
     let output = tokio::time::timeout(std::time::Duration::from_secs(10), probe)
         .await
-        .ok()? 
+        .ok()?
         .ok()?;
 
     if !output.status.success() {

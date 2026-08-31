@@ -8,6 +8,23 @@ let filterWatchedFips = WATCHED_FIPS_FILTER_DEFAULT;
 const formatTimestamp = window.formatTimestamp;
 const fetch_audio = window.fetch_audio;
 
+function escapeHtml(value) {
+    return String(value ?? "")
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#39;");
+}
+
+function isCapAlert(alert) {
+    if (String(alert?.data?.source_type || "").toLowerCase() === "cap") {
+        return true;
+    }
+    const rawZczc = String(alert?.data?.raw_zczc || "");
+    return rawZczc.includes("IPAWSCAP") || rawZczc.includes("IPAWSWEA");
+}
+
 async function fetchArchivedAlerts() {
     const maxAlertsInput = document.getElementById("maxAlertCount");
     let value = maxAlertsInput.value || "50";
@@ -48,6 +65,9 @@ async function renderAlerts() {
         card.className = `alert-card ${severityClass}`;
         const parsedEventText = /has issued(?: an?| the)? (.*?) for/i.exec(alert?.data?.eas_text || "");
         const eventText = alert?.data?.event_text || parsedEventText?.[1] || "No headline available";
+        const capAlert = isCapAlert(alert);
+        const capDescription = capAlert ? String(alert?.data?.description || "").trim() : "";
+        const capInstructions = capAlert ? String(alert?.data?.instructions || "").trim() : "";
         card.innerHTML = `
             <div class="event-code">${alert.data.event_code}</div>
             <div class="headline">${eventText}</div>
@@ -63,6 +83,8 @@ async function renderAlerts() {
                 <div><strong>Expired:</strong> ${formatTimestamp(alert.expired_at * 1000)}</div>
                 <br>
                 <div><strong>Length:</strong> ${alert.data.length ? `${Math.floor(alert.data.length / 100)}h ${alert.data.length % 100}m` : "—"}</div>
+                ${capDescription ? `<br><div><strong>CAP Description:</strong> <pre>${escapeHtml(capDescription)}</pre></div>` : ""}
+                ${capInstructions ? `<br><div><strong>CAP Instructions:</strong> <pre>${escapeHtml(capInstructions)}</pre></div>` : ""}
                 <br>
                 <div><strong>Raw ZCZC String:</strong> <pre>${alert.data.raw_zczc || "—"}</pre></div>
                 ${recordingMarkup}
