@@ -10,26 +10,20 @@ env:
   IMAGE_NAME: eas-listener
   REGISTRY: ghcr.io
 
-# A second push to main supersedes the first. Multi-arch builds are expensive
-# enough that finishing a run nobody will pull is pure waste.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  # Compiling under QEMU is ~12x slower than native, so every platform gets its
-  # own runner rather than sharing four cores three ways. arm64 gets a native
-  # arm64 runner (free for public repos), which removes emulation from that leg
-  # entirely; only armv7 still needs binfmt, and it now has a runner to itself.
-  #
-  # Pull requests build the amd64 leg only. Emulating the ARM legs on every PR
-  # costs ~20 minutes to re-prove what the merge build proves again anyway.
   setup:
     runs-on: ubuntu-24.04
+    permissions:
+      contents: read
     outputs:
       matrix: ${{ steps.matrix.outputs.matrix }}
       image_id: ${{ steps.meta.outputs.image_id }}
       version: ${{ steps.meta.outputs.version }}
+      spfy_version: ${{ steps.spfy.outputs.version }}
     steps:
       - name: Compute build matrix
         id: matrix
@@ -50,10 +44,16 @@ jobs:
           [ "$VERSION" == "main" ] && VERSION=latest
           echo "image_id=${IMAGE_ID}" >> "$GITHUB_OUTPUT"
           echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
+      - name: Resolve latest Speechify release
+        id: spfy
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          SPFY_VERSION=$(gh api repos/wagwan-piffting-blud/Speechify/releases/latest --jq .tag_name 2>/dev/null || true)
+          [ -n "$SPFY_VERSION" ] || SPFY_VERSION=latest
+          echo "Speechify release: ${SPFY_VERSION}"
+          echo "version=${SPFY_VERSION}" >> "$GITHUB_OUTPUT"
 
-  # Moved out of the Dockerfile's amd64 leg, where it added ~200s to the image
-  # build and could not share a cargo cache between runs. It gates the tag: the
-  # per-arch images push by digest, but `merge` only names them if this passes.
   test:
     runs-on: ubuntu-24.04
     steps:
@@ -80,8 +80,6 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
-      # Only the armv7 leg is emulated now; arm64 runs on a native arm64 runner
-      # and amd64 on a native x86 one, so neither needs binfmt registered.
       - name: Set up QEMU
         if: matrix.platform == 'linux/arm/v7'
         uses: docker/setup-qemu-action@v3
@@ -91,9 +89,6 @@ jobs:
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      # Logging in on pull requests too, even though they never push: the token
-      # is read-only there, but it is what lets `cache-from` pull the buildcache
-      # tag, which is the whole reason a PR build is fast.
       - name: Log in to registry
         uses: docker/login-action@v3
         with:
@@ -101,14 +96,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # Registry cache, not type=gha. The GHA backend spent 8m52s exporting a
-      # mode=max multi-arch cache that then produced zero CACHED steps on the
-      # next run -- a mode=max export of three platforms blows past the 10GB
-      # per-repo cache limit and gets evicted before it can be read back.
-      # GHCR has no such limit and the push runs at registry speed.
-      #
-      # Scoped per variant AND per arch so the four legs never overwrite each
-      # other's cache manifest.
       - name: Build and push by digest
         id: build
         uses: docker/build-push-action@v6
@@ -118,6 +105,7 @@ jobs:
           platforms: ${{ matrix.platform }}
           build-args: |
             VARIANT=${{ matrix.variant }}
+            SPFY_VERSION=${{ needs.setup.outputs.spfy_version }}
           labels: runnumber=${{ github.run_id }}
           provenance: false
           outputs: ${{ github.event_name != 'pull_request' && format('type=image,name={0},push-by-digest=true,name-canonical=true,push=true', needs.setup.outputs.image_id) || 'type=cacheonly' }}
@@ -140,9 +128,6 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
-  # Composes the per-arch digests into the published manifest list. Gated on
-  # `test` so a failing test suite leaves the digests unnamed and unpullable,
-  # which is the same guarantee the in-Dockerfile `cargo test` used to give.
   merge:
     if: github.event_name != 'pull_request'
     needs: [setup, test, build]
@@ -156,12 +141,6 @@ jobs:
         include:
           - variant: full
             tag_suffix: ""
-          # DEPRECATED: published from the same Dockerfile with VARIANT=lite
-          # purely so existing `:latest-lite` pulls keep resolving. Delete this
-          # entry (and the matching `lite` entry in `setup`) after v0.32.0.
-          #
-          # amd64 only, deliberately: no ARM `-lite` image was ever published,
-          # so no ARM user of this tag can exist. ARM users get `:latest`.
           - variant: lite
             tag_suffix: "-lite"
     steps:

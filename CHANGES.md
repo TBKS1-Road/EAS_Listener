@@ -1,4 +1,14 @@
-# v0.33.0: Released 2026-08-31
+# EAS Listener Changelog
+
+## v0.34.0: Released 2026-09-06
+
+- **Fix URL parsing for Speechify TTS in CAP descriptions and instructions.** A new URL normalization step has been added to CAP parsing, which ensures that URLs in the `<description>` and `<instruction>` elements are properly formatted for TTS reading. This prevents issues where URLs were being read incorrectly (especially in Speechify). As a result, some spfy changes have been made upstream to augment this.
+
+- **The build tracks the latest Speechify release instead of a hard-coded one.** `SPFY_VERSION` now defaults to `latest` and is resolved against the GitHub release feed at build time, and each asset's SHA-256 comes from the release metadata rather than three checksums pasted into the Dockerfile -- the `sha256:` prefix GitHub prints on the release page is stripped automatically, so a version bump is no longer an edit at all. The `SPFY_ASSET_SHA256_*` build args survive as overrides for builds that cannot reach the API, and accept the prefixed or bare form interchangeably. Architecture support is now gated on `SPFY_ASSET_SLUG_*` alone, making a new arch a one-line change. CI resolves the release tag once in the `setup` job and passes it to every matrix leg, which keeps all three architectures on the same release and invalidates the registry buildcache exactly when a new release lands.
+
+---
+
+## v0.33.0: Released 2026-08-31
 
 - **Updated the Docker build.** The Dockerfile is now updated with recent upstream Speechify/spfy changes. As well, it has been optimized.
 
@@ -12,7 +22,7 @@
 
 ---
 
-v0.32.0: Released 2026-07-22
+## v0.32.0: Released 2026-07-22
 
 - **ARM images are here.** `latest` is now a multi-arch manifest covering `linux/amd64`, `linux/arm64`, and `linux/arm/v7`, so everything from a Raspberry Pi 2 on 32-bit Pi OS to a Pi 5 on a 64-bit OS can pull the image directly with no config change. CI now builds with Buildx + QEMU instead of a plain `docker build`. Thanks to @UrkiMimi who opened the ARM request issue (#6).
 
@@ -26,28 +36,28 @@ v0.32.0: Released 2026-07-22
 
 - **Dashboard notices.** The dashboard now renders a banner when you are running the deprecated `-lite` image, and a second banner when your requested TTS engine was unavailable and got substituted. Both are driven by an `image_info.json` that the entrypoint writes at every boot, so they need no configuration.
 
-- Speechify Tom voice blobs (`tom.vin`, `tom8.vdb`, `tom.vcf`) are now fetched from a pinned commit over HTTPS and verified with SHA-256, replacing an unpinned shallow `git clone` of `main`. This makes the build reproducible and drops `git` from the runtime image entirely.
+- **Speechify Tom voice blobs (`tom.vin`, `tom8.vdb`, `tom.vcf`) are now fetched from a pinned commit over HTTPS and verified with SHA-256, replacing an unpinned shallow `git clone` of `main`.** This makes the build simpler and drops `git` from the runtime image entirely.
 
-- Fixed the OpenSSL runtime dependency, which was named `libssl3`. On Debian trixie that package has no installation candidate on *any* architecture -- it was only resolving on amd64 through virtual-package indirection, and it fails outright on armhf, where Debian's 64-bit `time_t` transition is visible. The image now installs `libssl3t64` by name, which is the real package on amd64, arm64, and armhf alike.
-
----
-
-v0.31.0: Released 2026-07-22
-
-- Some small changes across the board, linting, comment removal, etc. to reduce the size of the codebase and improve readability.
+- **Fixed the OpenSSL runtime dependency, which was named `libssl3`.** On Debian trixie that package has no installation candidate on *any* architecture -- it was only resolving on amd64 through virtual-package indirection, and it fails outright on armhf, where Debian's 64-bit `time_t` transition is visible. The image now installs `libssl3t64` by name, which is the real package on amd64, arm64, and armhf alike.
 
 ---
 
-v0.30.0: Released 2026-07-13
+## v0.31.0: Released 2026-07-22
 
-- Happy version 30! I am introducing a new CHANGES.md file to keep track of all the changes made in EAS_Listener. This will help maintain a clear history of updates and improvements made to EAS_Listener. EAS Tools uses the same kind of CHANGES.md file to keep track of changes made in EAS Tools. The CHANGES.md file will be updated with each new version, and it will include a summary of the changes made, along with the version number and date of the release.
+- **Some small changes across the board, linting, comment removal, etc. to reduce the size of the codebase and improve readability.**
 
-- Introduce AGENTS.md file to help agentic development of EAS_Listener. This file will contain information about the project to help coding agents understand the project and its goals. It will include details about the architecture, design patterns, and coding standards used in EAS_Listener. The AGENTS.md file will be updated as needed to provide the most up-to-date information for coding agents working on EAS_Listener.
+---
 
-- Reduce Speechify Tom TTS dependency size to only the bare minimum required for the TTS engine to function. This will help reduce the overall size of the project and improve performance. (We also swapped over from Wine to spfy_synth, a NATIVE Linux binary that will run on Linux without Wine, which is a huge improvement for performance and stability. The UID match, however, is still 100% with the real Speechify Tom thanks to the in-line DLL FE loader.)
+## v0.30.0: Released 2026-07-13
 
-- Complete Icecast 2 stream integration. This was pending for the longest time, but never finished. Currently, this means that the listener can now output its own stream of alerts only, 24/7. There is a normal alert queue for frequent alert periods. The Icecast RELAY portion is 100% unmodified and works just the same.
+- **Happy version 30!** I am introducing a new CHANGES.md file to keep track of all the changes made in EAS_Listener. This will help maintain a clear history of updates and improvements made to EAS_Listener. EAS Tools uses the same kind of CHANGES.md file to keep track of changes made in EAS Tools. The CHANGES.md file will be updated with each new version, and it will include a summary of the changes made, along with the version number and date of the release.
 
-- Add "Send Test Alert" button to the EAS_Listener GUI. This allows users to easily test the whole alert system pipeline without having to wait for an actual alert to occur. The test alert will simulate a real alert and will be sent through the same channels as a real alert, allowing users to verify that their setup is working correctly. Helpful if you recently changed something and don't know if your changes will work. The test alert will also be logged in the alert history for reference. Major thanks to GitHub user [@averlice](https://github.com/averlice) for the idea.
+- **Introduce AGENTS.md file to help agentic development of EAS_Listener.** This file will contain information about the project to help coding agents understand the project and its goals. It will include details about the architecture, design patterns, and coding standards used in EAS_Listener. The AGENTS.md file will be updated as needed to provide the most up-to-date information for coding agents working on EAS_Listener.
 
-- Remove errant "icecast.xml" file from the Dockerfile. This file is not tracked locally and was causing build issues. Icecast should supply its own file.
+- **Reduce Speechify Tom TTS dependency size to only the bare minimum required for the TTS engine to function.** This will help reduce the overall size of the project and improve performance. (We also swapped over from Wine to spfy_synth, a NATIVE Linux binary that will run on Linux without Wine, which is a huge improvement for performance and stability. The UID match, however, is still 100% with the real Speechify Tom thanks to the in-line DLL FE loader.)
+
+- **Complete Icecast 2 stream integration.** This was pending for the longest time, but never finished. Currently, this means that the listener can now output its own stream of alerts only, 24/7. There is a normal alert queue for frequent alert periods. The Icecast RELAY portion is 100% unmodified and works just the same.
+
+- **Add "Send Test Alert" button to the EAS_Listener GUI.** This allows users to easily test the whole alert system pipeline without having to wait for an actual alert to occur. The test alert will simulate a real alert and will be sent through the same channels as a real alert, allowing users to verify that their setup is working correctly. Helpful if you recently changed something and don't know if your changes will work. The test alert will also be logged in the alert history for reference. Major thanks to GitHub user [@averlice](https://github.com/averlice) for the idea.
+
+- **Remove errant "icecast.xml" file from the Dockerfile.** This file is not tracked locally and was causing build issues. Icecast should supply its own file.

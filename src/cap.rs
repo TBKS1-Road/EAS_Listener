@@ -40,6 +40,14 @@ const CAP_TTS_REPLACEMENT_DICT_PATH: &str = "/app/cap_tts_replacement_config.jso
 const CAP_ACTIVE_ALERTS_FILE: &str = "active_alerts.json";
 const CAP_HEADER_SOURCE_MARKER_CAP: &str = "IPAWSCAP";
 const CAP_HEADER_SOURCE_MARKER_WEA: &str = "IPAWSWEA";
+const URL_SPELL_MODE_ON: &str = "\\!rp70 \\!tsc";
+const URL_SPELL_MODE_OFF: &str = "\\!rpr \\!ts0";
+const URL_BARE_HOST_TLDS: &[&str] = &["com", "org", "net", "gov", "edu", "mil", "info", "biz"];
+const URL_TWO_LABEL_SUFFIXES: &[&str] = &[
+    "co.uk", "org.uk", "gov.uk", "ac.uk", "me.uk", "net.uk", "com.au", "net.au", "org.au",
+    "gov.au", "edu.au", "co.nz", "govt.nz", "org.nz", "co.jp", "or.jp", "ne.jp", "co.za", "org.za",
+    "com.br", "com.mx", "gob.mx", "co.in", "gov.in",
+];
 
 static CAP_TTS_SYNTH_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 
@@ -1169,6 +1177,149 @@ fn parse_cap_alert(xml: &str, source_url: &str) -> Result<CapAlert> {
     })
 }
 
+fn normalize_urls_in_description(text: &str, use_spell_tags: bool) -> String {
+    let mut out = String::with_capacity(text.len() + 64);
+    let mut cursor = 0usize;
+
+    for caps in url_regex().captures_iter(text) {
+        let whole = caps.get(0).expect("capture group 0 always exists");
+
+        if matches!(
+            text[..whole.start()].chars().next_back(),
+            Some('@') | Some('/') | Some('\\')
+        ) {
+            continue;
+        }
+
+        let has_scheme = caps.name("scheme").is_some();
+        let host = caps.name("host").map(|m| m.as_str()).unwrap_or_default();
+        let rest = caps.name("rest").map(|m| m.as_str()).unwrap_or_default();
+
+        let kept = rest.trim_end_matches(|ch: char| {
+            matches!(
+                ch,
+                '.' | ',' | ';' | ':' | '!' | '?' | ')' | ']' | '}' | '"' | '\''
+            )
+        });
+        let trailing = &rest[kept.len()..];
+
+        let spoken_host = match speak_url_host(host, has_scheme, use_spell_tags) {
+            Some(spoken) => spoken,
+            None => continue,
+        };
+
+        out.push_str(&text[cursor..whole.start()]);
+        out.push_str(&spoken_host);
+        out.push_str(&speak_url_path(kept));
+        out.push_str(trailing);
+        cursor = whole.end();
+    }
+
+    out.push_str(&text[cursor..]);
+    collapse_inline_whitespace(&out)
+}
+
+fn url_regex() -> &'static regex::Regex {
+    static URL_RE: once_cell::sync::Lazy<regex::Regex> = once_cell::sync::Lazy::new(|| {
+        regex::Regex::new(
+            r#"(?i)\b(?P<scheme>https?://)?(?P<host>(?:[a-z0-9](?:[a-z0-9\-]*[a-z0-9])?\.)+[a-z]{2,24})(?::\d{1,5})?(?P<rest>[/?#][^\s<>"'\[\]{}]*)?"#,
+        )
+        .expect("valid CAP URL regex")
+    });
+    &URL_RE
+}
+
+fn speak_url_host(host: &str, has_scheme: bool, use_spell_tags: bool) -> Option<String> {
+    let host = host.trim_end_matches('.').to_ascii_lowercase();
+    let labels: Vec<&str> = host.split('.').collect();
+    if labels.len() < 2 {
+        return None;
+    }
+
+    let tld = *labels.last()?;
+    let starts_with_www = labels[0] == "www";
+    if !has_scheme && !starts_with_www && !URL_BARE_HOST_TLDS.contains(&tld) {
+        return None;
+    }
+
+    let suffix_labels = if labels.len() >= 3
+        && URL_TWO_LABEL_SUFFIXES
+            .contains(&format!("{}.{}", labels[labels.len() - 2], tld).as_str())
+    {
+        2
+    } else {
+        1
+    };
+    let suffix_start = labels.len().checked_sub(suffix_labels)?;
+
+    let mut spoken = String::with_capacity(host.len() * 3);
+    for (index, label) in labels.iter().enumerate() {
+        if index > 0 {
+            spoken.push_str(" dot ");
+        }
+        let spell = use_spell_tags && index < suffix_start && !(index == 0 && starts_with_www);
+        if spell {
+            spoken.push_str(URL_SPELL_MODE_ON);
+            spoken.push(' ');
+            spoken.push_str(label);
+            spoken.push(' ');
+            spoken.push_str(URL_SPELL_MODE_OFF);
+        } else {
+            spoken.push_str(label);
+        }
+    }
+
+    Some(spoken)
+}
+
+fn speak_url_path(rest: &str) -> String {
+    let path = rest
+        .split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .trim_end_matches('/');
+
+    let mut spoken = String::new();
+    for segment in path.split('/').filter(|segment| !segment.is_empty()) {
+        spoken.push_str(" slash ");
+        spoken.push_str(
+            &segment
+                .replace('.', " dot ")
+                .replace('-', " dash ")
+                .replace('_', " underscore "),
+        );
+    }
+    spoken
+}
+
+fn collapse_inline_whitespace(input: &str) -> String {
+    let mut out = String::with_capacity(input.len());
+    let mut pending_space = false;
+    for ch in input.chars() {
+        match ch {
+            ' ' | '\t' => pending_space = true,
+            '\n' => {
+                while out.ends_with(' ') {
+                    out.pop();
+                }
+                pending_space = false;
+                out.push('\n');
+            }
+            _ => {
+                if pending_space && !out.is_empty() {
+                    out.push(' ');
+                }
+                pending_space = false;
+                out.push(ch);
+            }
+        }
+    }
+    if pending_space && !out.is_empty() {
+        out.push(' ');
+    }
+    out
+}
+
 fn sanitize_cap_description(description: &str) -> String {
     let mut working = description.trim();
 
@@ -1487,12 +1638,14 @@ async fn synthesize_cap_tts_audio(
         .map(|instr| deduplicate_instructions(description, instr))
         .filter(|s| !s.is_empty());
 
-    let tts_text = format!(
-        "{} {} {}",
-        alert_prefix,
-        description,
-        deduped_instructions.as_deref().unwrap_or_default()
-    );
+    let use_spell_tags = config.tts_engine == "speechify";
+    let spoken_description = normalize_urls_in_description(description, use_spell_tags);
+    let spoken_instructions = deduped_instructions
+        .as_deref()
+        .map(|instr| normalize_urls_in_description(instr, use_spell_tags))
+        .unwrap_or_default();
+
+    let tts_text = format!("{alert_prefix} {spoken_description} {spoken_instructions}");
 
     let status = match config.tts_engine.as_str() {
         "piper" => {
@@ -2681,6 +2834,69 @@ mod tests {
         watched.clear();
         watched.insert("999999".to_string());
         assert!(!is_cap_relevant(&alert_fips, &watched));
+    }
+
+    #[test]
+    fn normalize_urls_spells_bare_domain() {
+        assert_eq!(
+            normalize_urls_in_description("See https://TxDOTAlerts.com for current alerts.", true),
+            "See \\!rp80 \\!tsc txdotalerts \\!rpr \\!ts0 dot com for current alerts."
+        );
+    }
+
+    #[test]
+    fn normalize_urls_keeps_www_prefix_spoken() {
+        assert_eq!(
+            normalize_urls_in_description(
+                "Visit our website at www.example.com for more information.",
+                true
+            ),
+            "Visit our website at www dot \\!rp80 \\!tsc example \\!rpr \\!ts0 dot com for more information."
+        );
+    }
+
+    #[test]
+    fn normalize_urls_drops_query_and_fragment_and_speaks_path() {
+        assert_eq!(
+            normalize_urls_in_description(
+                "Details at https://alerts.weather.gov/cap/us.php?x=1#top now.",
+                true
+            ),
+            "Details at \\!rp80 \\!tsc alerts \\!rpr \\!ts0 dot \\!rp80 \\!tsc weather \\!rpr \\!ts0 dot gov slash cap slash us dot php now."
+        );
+    }
+
+    #[test]
+    fn normalize_urls_handles_multiple_urls_and_two_label_suffix() {
+        assert_eq!(
+            normalize_urls_in_description(
+                "Check ready.gov and http://www.example.co.uk/help today.",
+                true
+            ),
+            "Check \\!rp80 \\!tsc ready \\!rpr \\!ts0 dot gov and www dot \\!rp80 \\!tsc example \\!rpr \\!ts0 dot co dot uk slash help today."
+        );
+    }
+
+    #[test]
+    fn normalize_urls_spells_every_subdomain_but_not_www() {
+        assert_eq!(
+            normalize_urls_in_description("Go to https://www.alerts.nws.example.com now.", true),
+            "Go to www dot \\!rp80 \\!tsc alerts \\!rpr \\!ts0 dot \\!rp80 \\!tsc nws \\!rpr \\!ts0 dot \\!rp80 \\!tsc example \\!rpr \\!ts0 dot com now."
+        );
+    }
+
+    #[test]
+    fn normalize_urls_without_spell_tags_for_other_engines() {
+        assert_eq!(
+            normalize_urls_in_description("See https://TxDOTAlerts.com for current alerts.", false),
+            "See txdotalerts dot com for current alerts."
+        );
+    }
+
+    #[test]
+    fn normalize_urls_leaves_prose_and_emails_alone() {
+        let prose = "Move to shelter.Motorists should use caution. Winds of 1.5 inches. Email info@example.com now.";
+        assert_eq!(normalize_urls_in_description(prose, true), prose);
     }
 
     #[test]

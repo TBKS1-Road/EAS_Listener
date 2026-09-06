@@ -27,14 +27,6 @@ if [ -n "${ORIGINAL_LOCAL_DEEPLINK_HOST:-}" ]; then
     export LOCAL_DEEPLINK_HOST="${ORIGINAL_LOCAL_DEEPLINK_HOST}"
 fi
 
-# --------------------------------------------------------------------------- #
-# TTS engine resolution
-#
-# Speechify Tom only exists as a 32-bit x86 binary, so it ships in the amd64
-# "full" image and nowhere else. Resolve the requested engine against what is
-# actually installed so an ARM image (or the deprecated -lite image) degrades to
-# Piper at startup instead of failing on the first CAP alert that needs TTS.
-# --------------------------------------------------------------------------- #
 IMAGE_VARIANT="${EAS_IMAGE_VARIANT:-full}"
 IMAGE_ARCH="$(dpkg --print-architecture 2>/dev/null || uname -m)"
 
@@ -83,8 +75,6 @@ sed -i "s/session.gc_maxlifetime = .*/session.gc_maxlifetime = 259200/" /etc/php
 
 chmod -R 777 /app /data /var/www/html
 
-# Surfaced by the dashboard (see web_server/notices.php). Written after the chmod
-# above so a bind-mounted /var/www/html still ends up with a readable file.
 IMAGE_INFO_PATH="/var/www/html/image_info.json"
 if jq -n \
     --arg variant "$IMAGE_VARIANT" \
