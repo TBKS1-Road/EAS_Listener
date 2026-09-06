@@ -2,9 +2,11 @@
 
 ## v0.34.0: Released 2026-09-06
 
-- **Fix URL parsing for Speechify TTS in CAP descriptions and instructions.** A new URL normalization step has been added to CAP parsing, which ensures that URLs in the `<description>` and `<instruction>` elements are properly formatted for TTS reading. This prevents issues where URLs were being read incorrectly (especially in Speechify). As a result, some spfy changes have been made upstream to augment this.
+- **Fix URL parsing for Speechify TTS in CAP descriptions and instructions.** A new URL normalization step has been added to CAP parsing, which ensures that URLs in the `<description>` and `<instruction>` elements are properly formatted for TTS reading. This prevents issues where URLs were being read incorrectly (especially in Speechify). As a result, some spfy/Speechify changes have been made upstream to augment this.
 
 - **The build tracks the latest Speechify release instead of a hard-coded one.** `SPFY_VERSION` now defaults to `latest` and is resolved against the GitHub release feed at build time, and each asset's SHA-256 comes from the release metadata rather than three checksums pasted into the Dockerfile -- the `sha256:` prefix GitHub prints on the release page is stripped automatically, so a version bump is no longer an edit at all. The `SPFY_ASSET_SHA256_*` build args survive as overrides for builds that cannot reach the API, and accept the prefixed or bare form interchangeably. Architecture support is now gated on `SPFY_ASSET_SLUG_*` alone, making a new arch a one-line change. CI resolves the release tag once in the `setup` job and passes it to every matrix leg, which keeps all three architectures on the same release and invalidates the registry buildcache exactly when a new release lands.
+
+- **Update unit tests.** The unit tests have been updated this commit to fix a failed test.
 
 ---
 

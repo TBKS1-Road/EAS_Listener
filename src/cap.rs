@@ -2836,11 +2836,17 @@ mod tests {
         assert!(!is_cap_relevant(&alert_fips, &watched));
     }
 
+    /// Wraps a label the way `speak_url_host` does, so these expectations follow
+    /// URL_SPELL_MODE_ON/OFF rather than pinning whatever rate they carry today.
+    fn spelled(label: &str) -> String {
+        format!("{URL_SPELL_MODE_ON} {label} {URL_SPELL_MODE_OFF}")
+    }
+
     #[test]
     fn normalize_urls_spells_bare_domain() {
         assert_eq!(
             normalize_urls_in_description("See https://TxDOTAlerts.com for current alerts.", true),
-            "See \\!rp80 \\!tsc txdotalerts \\!rpr \\!ts0 dot com for current alerts."
+            format!("See {} dot com for current alerts.", spelled("txdotalerts"))
         );
     }
 
@@ -2851,7 +2857,10 @@ mod tests {
                 "Visit our website at www.example.com for more information.",
                 true
             ),
-            "Visit our website at www dot \\!rp80 \\!tsc example \\!rpr \\!ts0 dot com for more information."
+            format!(
+                "Visit our website at www dot {} dot com for more information.",
+                spelled("example")
+            )
         );
     }
 
@@ -2862,7 +2871,11 @@ mod tests {
                 "Details at https://alerts.weather.gov/cap/us.php?x=1#top now.",
                 true
             ),
-            "Details at \\!rp80 \\!tsc alerts \\!rpr \\!ts0 dot \\!rp80 \\!tsc weather \\!rpr \\!ts0 dot gov slash cap slash us dot php now."
+            format!(
+                "Details at {} dot {} dot gov slash cap slash us dot php now.",
+                spelled("alerts"),
+                spelled("weather")
+            )
         );
     }
 
@@ -2873,7 +2886,11 @@ mod tests {
                 "Check ready.gov and http://www.example.co.uk/help today.",
                 true
             ),
-            "Check \\!rp80 \\!tsc ready \\!rpr \\!ts0 dot gov and www dot \\!rp80 \\!tsc example \\!rpr \\!ts0 dot co dot uk slash help today."
+            format!(
+                "Check {} dot gov and www dot {} dot co dot uk slash help today.",
+                spelled("ready"),
+                spelled("example")
+            )
         );
     }
 
@@ -2881,7 +2898,12 @@ mod tests {
     fn normalize_urls_spells_every_subdomain_but_not_www() {
         assert_eq!(
             normalize_urls_in_description("Go to https://www.alerts.nws.example.com now.", true),
-            "Go to www dot \\!rp80 \\!tsc alerts \\!rpr \\!ts0 dot \\!rp80 \\!tsc nws \\!rpr \\!ts0 dot \\!rp80 \\!tsc example \\!rpr \\!ts0 dot com now."
+            format!(
+                "Go to www dot {} dot {} dot {} dot com now.",
+                spelled("alerts"),
+                spelled("nws"),
+                spelled("example")
+            )
         );
     }
 
